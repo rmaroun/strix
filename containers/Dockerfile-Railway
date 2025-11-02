@@ -1,18 +1,18 @@
-# Full Dockerfile (updated - copies repo into /app before installing)
+# Full Dockerfile (Railway-ready, with caido-cli in PATH and entrypoint)
 FROM kalilinux/kali-rolling:latest
 
 LABEL description="AI Agent Penetration Testing Environment with Comprehensive Automated Tools"
 
-# --- Basic system prep -------------------------------------------------------
+# --- Base system prep --------------------------------------------------------
 RUN apt-get update && \
     apt-get install -y kali-archive-keyring sudo && \
     apt-get update && \
     apt-get upgrade -y
 
-# create a lightweight "python" command pointing to python3
+# ensure `python` exists (points to python3)
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
-# --- User & directories -----------------------------------------------------
+# --- User & directories ------------------------------------------------------
 RUN useradd -m -s /bin/bash pentester && \
     usermod -aG sudo pentester && \
     echo "pentester ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
@@ -28,7 +28,7 @@ RUN mkdir -p /home/pentester/configs \
              /workspace && \
     chown -R pentester:pentester /app/certs /home/pentester/tools /workspace
 
-# --- System packages --------------------------------------------------------
+# --- System packages ---------------------------------------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       wget curl git vim nano unzip tar \
@@ -53,10 +53,10 @@ RUN apt-get update && \
       libnss3-tools || true && \
     rm -rf /var/lib/apt/lists/*
 
-# allow nmap to use raw sockets
+# allow nmap to use raw sockets (non-fatal if fails)
 RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip $(which nmap) || true
 
-# --- create CA certs and trust store ---------------------------------------
+# --- Create CA certs & trust store ------------------------------------------
 USER pentester
 RUN openssl ecparam -name prime256v1 -genkey -noout -out /app/certs/ca.key && \
     openssl req -x509 -new -key /app/certs/ca.key \
@@ -76,7 +76,7 @@ RUN openssl ecparam -name prime256v1 -genkey -noout -out /app/certs/ca.key && \
 USER root
 RUN cp /app/certs/ca.crt /usr/local/share/ca-certificates/ca.crt && update-ca-certificates || true
 
-# --- Poetry + venv setup ----------------------------------------------------
+# --- Poetry + venv -----------------------------------------------------------
 RUN curl -sSL https://install.python-poetry.org | POETRY_HOME=/opt/poetry python3 - && \
     ln -s /opt/poetry/bin/poetry /usr/local/bin/poetry && \
     chmod +x /usr/local/bin/poetry && \
@@ -86,7 +86,7 @@ RUN curl -sSL https://install.python-poetry.org | POETRY_HOME=/opt/poetry python
 ENV NPM_CONFIG_PREFIX=/home/pentester/.npm-global
 RUN mkdir -p /home/pentester/.npm-global && chown -R pentester:pentester /home/pentester/.npm-global
 
-# --- Some optional tool installs (kept non-fatal with "|| true") ------------
+# --- Optional tool installs (kept non-fatal) --------------------------------
 USER pentester
 WORKDIR /tmp
 RUN go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest || true
@@ -119,8 +119,8 @@ USER pentester
 RUN pipx install semgrep || true
 RUN pipx install bandit || true
 
-# --- Environment variables & paths -----------------------------------------
-ENV PATH="/home/pentester/go/bin:/home/pentester/.local/bin:/home/pentester/.npm-global/bin:/app/venv/bin:$PATH"
+# --- Environment -------------------------------------------------------------
+ENV PATH="/home/pentester/go/bin:/home/pentester/.local/bin:/home/pentester/.npm-global/bin:/app/venv/bin:/usr/bin:$PATH"
 ENV VIRTUAL_ENV="/app/venv"
 ENV POETRY_HOME="/opt/poetry"
 ENV PYTHONPATH="/app"
@@ -128,46 +128,56 @@ ENV REQUESTS_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
 ENV SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
 ENV STRIX_SANDBOX_MODE="true"
 
-# --- CRITICAL: copy the full repo into /app BEFORE installing python deps ----
+# --- Copy repo to /app BEFORE Python install --------------------------------
 USER pentester
 WORKDIR /app
 COPY --chown=pentester:pentester . /app
 
-# if your repo includes containers/docker-entrypoint-railway.sh, copy it into /usr/local/bin
+# --- Install caido-cli (place in /usr/bin and symlink for pentester) --------
 USER root
-RUN if [ -f /app/containers/docker-entrypoint-railway.sh ]; then \
-      cp /app/containers/docker-entrypoint-railway.sh /usr/local/bin/docker-entrypoint-railway.sh && chmod +x /usr/local/bin/docker-entrypoint-railway.sh; \
-    fi
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then \
+        CAIDO_ARCH="x86_64"; \
+    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+        CAIDO_ARCH="aarch64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    wget -O /tmp/caido-cli.tar.gz "https://caido.download/releases/v0.48.0/caido-cli-v0.48.0-linux-${CAIDO_ARCH}.tar.gz" && \
+    tar -xzf /tmp/caido-cli.tar.gz -C /tmp && \
+    chmod +x /tmp/caido-cli && \
+    mv /tmp/caido-cli /usr/bin/caido-cli && \
+    rm -f /tmp/caido-cli.tar.gz && \
+    mkdir -p /home/pentester/.local/bin && \
+    ln -sf /usr/bin/caido-cli /home/pentester/.local/bin/caido-cli && \
+    chown -R pentester:pentester /home/pentester/.local
 
-# --- Install Python deps (poetry) and ensure uvicorn available ----------------
+# --- Python deps (poetry) + uvicorn/fastapi ---------------------------------
 USER pentester
 RUN /app/venv/bin/pip install --upgrade pip setuptools wheel || true
-# Install runtime deps with poetry (assumes pyproject.toml & poetry.lock are present in repo)
 RUN poetry install --no-root --without dev || true
-# ensure uvicorn (and any small runtime fallback) is present in venv
 RUN /app/venv/bin/pip install uvicorn fastapi || true
 
-# Playwright browser install (optional — can be heavy)
+# Playwright (optional; can be heavy in slim environments)
 RUN poetry run playwright install chromium --with-deps || true
 
-# jwt_tool requirements (if present)
+# jwt_tool extras (non-fatal)
 RUN /app/venv/bin/pip install -r /home/pentester/tools/jwt_tool/requirements.txt --no-deps || true
 RUN ln -s /home/pentester/tools/jwt_tool/jwt_tool.py /home/pentester/.local/bin/jwt_tool || true
 
 RUN echo "# Sandbox Environment" > /app/README.md || true
-
-# ensure permissions
 RUN chown -R pentester:pentester /app || true
 
-# copy the entrypoint script with executable bit set at build time
+# --- Entrypoint script (Railway init + tool server) -------------------------
+# Copy with mode here to avoid later chmod issues
+USER root
 COPY --chown=root:root --chmod=0755 containers/docker-entrypoint-railway.sh /usr/local/bin/docker-entrypoint-railway.sh
 
 USER pentester
 WORKDIR /workspace
 
-# Use the entrypoint to do setup; leave the actual server start to CMD so Railway can pass $PORT
+# Use entrypoint for local init; tool server started via CMD so $PORT expands
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint-railway.sh"]
 
-# Default command (shell form so $PORT and $STRIX_TOKEN expand)
-# This uses your tool_server (runtime) and expects Railway to provide $PORT and you to provide STRIX_TOKEN
+# Railway provides $PORT; this starts the FastAPI tool server
 CMD ["/bin/bash", "-lc", "/app/venv/bin/python -m strix.runtime.tool_server --token ${STRIX_TOKEN} --host 0.0.0.0 --port ${PORT:-8000}"]
