@@ -133,10 +133,10 @@ USER pentester
 WORKDIR /app
 COPY --chown=pentester:pentester . /app
 
-# if your repo includes containers/docker-entrypoint.sh, copy it into /usr/local/bin
+# if your repo includes containers/docker-entrypoint-railway.sh, copy it into /usr/local/bin
 USER root
-RUN if [ -f /app/containers/docker-entrypoint.sh ]; then \
-      cp /app/containers/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh; \
+RUN if [ -f /app/containers/docker-entrypoint-railway.sh ]; then \
+      cp /app/containers/docker-entrypoint-railway.sh /usr/local/bin/docker-entrypoint-railway.sh && chmod +x /usr/local/bin/docker-entrypoint-railway.sh; \
     fi
 
 # --- Install Python deps (poetry) and ensure uvicorn available ----------------
