@@ -1,0 +1,174 @@
+# Full Dockerfile (updated - copies repo into /app before installing)
+FROM kalilinux/kali-rolling:latest
+
+LABEL description="AI Agent Penetration Testing Environment with Comprehensive Automated Tools"
+
+# --- Basic system prep -------------------------------------------------------
+RUN apt-get update && \
+    apt-get install -y kali-archive-keyring sudo && \
+    apt-get update && \
+    apt-get upgrade -y
+
+# create a lightweight "python" command pointing to python3
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python
+
+# --- User & directories -----------------------------------------------------
+RUN useradd -m -s /bin/bash pentester && \
+    usermod -aG sudo pentester && \
+    echo "pentester ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+RUN mkdir -p /home/pentester/configs \
+             /home/pentester/wordlists \
+             /home/pentester/output \
+             /home/pentester/scripts \
+             /home/pentester/tools \
+             /app/runtime \
+             /app/tools \
+             /app/certs \
+             /workspace && \
+    chown -R pentester:pentester /app/certs /home/pentester/tools /workspace
+
+# --- System packages --------------------------------------------------------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      wget curl git vim nano unzip tar \
+      apt-transport-https ca-certificates gnupg lsb-release \
+      build-essential software-properties-common \
+      gcc libc6-dev pkg-config libpcap-dev libssl-dev \
+      python3 python3-pip python3-dev python3-venv python3-setuptools \
+      golang-go \
+      net-tools dnsutils whois \
+      jq parallel ripgrep grep \
+      less man-db procps htop \
+      iproute2 iputils-ping netcat-traditional \
+      nmap ncat ndiff \
+      sqlmap nuclei subfinder naabu ffuf \
+      nodejs npm pipx \
+      libcap2-bin \
+      gdb \
+      tmux \
+      libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libatspi2.0-0 \
+      libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64 \
+      fonts-unifont fonts-noto-color-emoji fonts-freefont-ttf fonts-dejavu-core ttf-bitstream-vera \
+      libnss3-tools || true && \
+    rm -rf /var/lib/apt/lists/*
+
+# allow nmap to use raw sockets
+RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip $(which nmap) || true
+
+# --- create CA certs and trust store ---------------------------------------
+USER pentester
+RUN openssl ecparam -name prime256v1 -genkey -noout -out /app/certs/ca.key && \
+    openssl req -x509 -new -key /app/certs/ca.key \
+      -out /app/certs/ca.crt \
+      -days 3650 \
+      -subj "/C=US/ST=CA/O=Security Testing/CN=Testing Root CA" \
+      -addext "basicConstraints=critical,CA:TRUE" \
+      -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" && \
+    openssl pkcs12 -export \
+      -out /app/certs/ca.p12 \
+      -inkey /app/certs/ca.key \
+      -in /app/certs/ca.crt \
+      -passout pass:"" \
+      -name "Testing Root CA" && \
+    chmod 644 /app/certs/ca.crt && chmod 600 /app/certs/ca.key && chmod 600 /app/certs/ca.p12
+
+USER root
+RUN cp /app/certs/ca.crt /usr/local/share/ca-certificates/ca.crt && update-ca-certificates || true
+
+# --- Poetry + venv setup ----------------------------------------------------
+RUN curl -sSL https://install.python-poetry.org | POETRY_HOME=/opt/poetry python3 - && \
+    ln -s /opt/poetry/bin/poetry /usr/local/bin/poetry && \
+    chmod +x /usr/local/bin/poetry && \
+    python3 -m venv /app/venv && \
+    chown -R pentester:pentester /app/venv /opt/poetry
+
+ENV NPM_CONFIG_PREFIX=/home/pentester/.npm-global
+RUN mkdir -p /home/pentester/.npm-global && chown -R pentester:pentester /home/pentester/.npm-global
+
+# --- Some optional tool installs (kept non-fatal with "|| true") ------------
+USER pentester
+WORKDIR /tmp
+RUN go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest || true
+RUN go install -v github.com/projectdiscovery/katana/cmd/katana@latest || true
+RUN go install -v github.com/projectdiscovery/cvemap/cmd/vulnx@latest || true
+RUN go install -v github.com/jaeles-project/gospider@latest || true
+RUN go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest || true
+
+RUN nuclei -update-templates || true
+
+RUN pipx install arjun || true
+RUN pipx install dirsearch || true
+RUN pipx inject dirsearch setuptools || true
+RUN pipx install wafw00f || true
+
+RUN npm install -g retire@latest eslint@latest js-beautify@latest jshint@latest || true
+
+WORKDIR /home/pentester/tools
+RUN git clone https://github.com/aravind0x7/JS-Snooper.git || true && chmod +x JS-Snooper/js_snooper.sh || true
+RUN git clone https://github.com/xchopath/jsniper.sh.git || true && chmod +x jsniper.sh/jsniper.sh || true
+RUN git clone https://github.com/ticarpi/jwt_tool.git || true && chmod +x jwt_tool/jwt_tool.py || true
+
+USER root
+RUN curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin || true
+RUN apt-get update && apt-get install -y zaproxy || true
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin || true
+RUN apt-get install -y wapiti || true
+
+USER pentester
+RUN pipx install semgrep || true
+RUN pipx install bandit || true
+
+# --- Environment variables & paths -----------------------------------------
+ENV PATH="/home/pentester/go/bin:/home/pentester/.local/bin:/home/pentester/.npm-global/bin:/app/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/venv"
+ENV POETRY_HOME="/opt/poetry"
+ENV PYTHONPATH="/app"
+ENV REQUESTS_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
+ENV SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
+ENV STRIX_SANDBOX_MODE="true"
+
+# --- CRITICAL: copy the full repo into /app BEFORE installing python deps ----
+USER pentester
+WORKDIR /app
+COPY --chown=pentester:pentester . /app
+
+# if your repo includes containers/docker-entrypoint.sh, copy it into /usr/local/bin
+USER root
+RUN if [ -f /app/containers/docker-entrypoint.sh ]; then \
+      cp /app/containers/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh; \
+    fi
+
+# --- Install Python deps (poetry) and ensure uvicorn available ----------------
+USER pentester
+RUN /app/venv/bin/pip install --upgrade pip setuptools wheel || true
+# Install runtime deps with poetry (assumes pyproject.toml & poetry.lock are present in repo)
+RUN poetry install --no-root --without dev || true
+# ensure uvicorn (and any small runtime fallback) is present in venv
+RUN /app/venv/bin/pip install uvicorn fastapi || true
+
+# Playwright browser install (optional — can be heavy)
+RUN poetry run playwright install chromium --with-deps || true
+
+# jwt_tool requirements (if present)
+RUN /app/venv/bin/pip install -r /home/pentester/tools/jwt_tool/requirements.txt --no-deps || true
+RUN ln -s /home/pentester/tools/jwt_tool/jwt_tool.py /home/pentester/.local/bin/jwt_tool || true
+
+RUN echo "# Sandbox Environment" > /app/README.md || true
+
+# ensure permissions
+RUN chown -R pentester:pentester /app || true
+
+# copy the entrypoint script (ensure this path exists in your repo)
+COPY containers/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+USER pentester
+WORKDIR /workspace
+
+# Use the entrypoint to do setup; leave the actual server start to CMD so Railway can pass $PORT
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
+# Default command (shell form so $PORT and $STRIX_TOKEN expand)
+# This uses your tool_server (runtime) and expects Railway to provide $PORT and you to provide STRIX_TOKEN
+CMD ["/bin/bash", "-lc", "/app/venv/bin/python -m strix.runtime.tool_server --token ${STRIX_TOKEN} --host 0.0.0.0 --port ${PORT:-8000}"]
