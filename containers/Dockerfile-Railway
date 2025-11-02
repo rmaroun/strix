@@ -159,9 +159,8 @@ RUN echo "# Sandbox Environment" > /app/README.md || true
 # ensure permissions
 RUN chown -R pentester:pentester /app || true
 
-# copy the entrypoint script (ensure this path exists in your repo)
-COPY containers/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# copy the entrypoint script with executable bit set at build time
+COPY --chown=root:root --chmod=0755 containers/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 USER pentester
 WORKDIR /workspace
