@@ -1,0 +1,22 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "services": {
+    "strix": {
+      "source": ".",
+      "build": {
+        "builder": "DOCKERFILE",
+        "dockerfilePath": "containers/Dockerfile-Railway"
+      },
+      "http": { "port": 8080 },
+      "env": {
+        "STRIX_SANDBOX_MODE": "true",
+        "CAIDO_PORT": "9000",
+        "PYTHONUNBUFFERED": "1"
+      },
+      "deploy": {
+        "healthcheckPath": "/health",
+        "restartPolicyType": "ALWAYS"
+      }
+    }
+  }
+}
