@@ -160,13 +160,13 @@ RUN echo "# Sandbox Environment" > /app/README.md || true
 RUN chown -R pentester:pentester /app || true
 
 # copy the entrypoint script with executable bit set at build time
-COPY --chown=root:root --chmod=0755 containers/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chown=root:root --chmod=0755 containers/docker-entrypoint-railway.sh /usr/local/bin/docker-entrypoint-railway.sh
 
 USER pentester
 WORKDIR /workspace
 
 # Use the entrypoint to do setup; leave the actual server start to CMD so Railway can pass $PORT
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-railway.sh"]
 
 # Default command (shell form so $PORT and $STRIX_TOKEN expand)
 # This uses your tool_server (runtime) and expects Railway to provide $PORT and you to provide STRIX_TOKEN
