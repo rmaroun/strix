@@ -1,4 +1,4 @@
-# Full Dockerfile (Railway-ready, with caido-cli in PATH and entrypoint)
+# Full Dockerfile (Railway-ready, with caido-cli in PATH and rootless-docker support)
 FROM kalilinux/kali-rolling:latest
 
 LABEL description="AI Agent Penetration Testing Environment with Comprehensive Automated Tools"
@@ -29,6 +29,7 @@ RUN mkdir -p /home/pentester/configs \
     chown -R pentester:pentester /app/certs /home/pentester/tools /workspace
 
 # --- System packages ---------------------------------------------------------
+# add rootless-docker prereqs (uidmap, slirp4netns, fuse-overlayfs) as well
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       wget curl git vim nano unzip tar \
@@ -47,6 +48,7 @@ RUN apt-get update && \
       libcap2-bin \
       gdb \
       tmux \
+      uidmap slirp4netns fuse-overlayfs \
       libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libatspi2.0-0 \
       libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64 \
       fonts-unifont fonts-noto-color-emoji fonts-freefont-ttf fonts-dejavu-core ttf-bitstream-vera \
@@ -120,13 +122,16 @@ RUN pipx install semgrep || true
 RUN pipx install bandit || true
 
 # --- Environment -------------------------------------------------------------
-ENV PATH="/home/pentester/go/bin:/home/pentester/.local/bin:/home/pentester/.npm-global/bin:/app/venv/bin:/usr/bin:$PATH"
+ENV PATH="/home/pentester/go/bin:/home/pentester/.local/bin:/home/pentester/.npm-global/bin:/app/venv/bin:/usr/bin:/home/pentester/bin:${PATH}"
 ENV VIRTUAL_ENV="/app/venv"
 ENV POETRY_HOME="/opt/poetry"
 ENV PYTHONPATH="/app"
 ENV REQUESTS_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
 ENV SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
 ENV STRIX_SANDBOX_MODE="true"
+# rootless docker runtime dir for pentester (will be created at entrypoint as well)
+ENV XDG_RUNTIME_DIR="/home/pentester/.docker/run"
+ENV DOCKER_HOST="unix:///home/pentester/.docker/run/docker.sock"
 
 # --- Copy repo to /app BEFORE Python install --------------------------------
 USER pentester
@@ -152,13 +157,13 @@ RUN ARCH=$(uname -m) && \
     ln -sf /usr/bin/caido-cli /home/pentester/.local/bin/caido-cli && \
     chown -R pentester:pentester /home/pentester/.local
 
-# --- Python deps (poetry) + uvicorn/fastapi ---------------------------------
+# --- Install Python deps (poetry) + uvicorn/fastapi --------------------------
 USER pentester
 RUN /app/venv/bin/pip install --upgrade pip setuptools wheel || true
 RUN poetry install --no-root --without dev || true
 RUN /app/venv/bin/pip install uvicorn fastapi || true
 
-# Playwright (optional; can be heavy in slim environments)
+# Playwright (optional; can be heavy)
 RUN poetry run playwright install chromium --with-deps || true
 
 # jwt_tool extras (non-fatal)
@@ -168,16 +173,15 @@ RUN ln -s /home/pentester/tools/jwt_tool/jwt_tool.py /home/pentester/.local/bin/
 RUN echo "# Sandbox Environment" > /app/README.md || true
 RUN chown -R pentester:pentester /app || true
 
-# --- Entrypoint script (Railway init + tool server) -------------------------
-# Copy with mode here to avoid later chmod issues
+# --- Copy entrypoint script with mode set (avoid later chmod permission errors)
 USER root
 COPY --chown=root:root --chmod=0755 containers/docker-entrypoint-railway.sh /usr/local/bin/docker-entrypoint-railway.sh
 
 USER pentester
 WORKDIR /workspace
 
-# Use entrypoint for local init; tool server started via CMD so $PORT expands
+# Use entrypoint for init; tool server started via CMD so $PORT expands
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint-railway.sh"]
 
-# Railway provides $PORT; this starts the FastAPI tool server
+# Railway provides $PORT; start the tool server (CMD string expands env)
 CMD ["/bin/bash", "-lc", "/app/venv/bin/python -m strix.runtime.tool_server --token ${STRIX_TOKEN} --host 0.0.0.0 --port ${PORT:-8000}"]
